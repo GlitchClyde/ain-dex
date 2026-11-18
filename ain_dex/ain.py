@@ -134,6 +134,53 @@ def _monthly_sums(df: pd.DataFrame, date_col: str, value_col: str) -> pd.Series:
     return d.groupby(d[date_col].dt.to_period("M"))[value_col].sum().sort_index()
 
 
+def compute_claim(
+    df: pd.DataFrame,
+    op: str,
+    column: str,
+    group_by: str | None = None,
+    date_column: str | None = None,
+) -> Claim | None:
+    """Compute one claim with pandas. Returns None when it cannot be computed meaningfully."""
+    if column not in df.columns:
+        return None
+    s = df[column].dropna()
+    if op == "count":
+        return Claim("count", column, float(len(s))) if len(s) else None
+    if op in {"sum", "mean", "median"}:
+        if s.empty:
+            return None
+        value = {"sum": s.sum, "mean": s.mean, "median": s.median}[op]()
+        return Claim(op, column, float(value))
+    if op == "outlier_count":
+        if len(s) < 4:
+            return None
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        return Claim(op, column, float(((s < q1 - 1.5 * iqr) | (s > q3 + 1.5 * iqr)).sum()))
+    if op in {"top_group_sum", "top_group_share"}:
+        if not group_by or group_by not in df.columns:
+            return None
+        g = df.dropna(subset=[group_by, column]).groupby(group_by)[column].sum()
+        if len(g) < 2:
+            return None
+        top, topv, total = str(g.idxmax()), float(g.max()), float(g.sum())
+        if op == "top_group_sum":
+            return Claim(op, column, topv, group_by=group_by, group=top)
+        if topv <= 0 or total <= 0:
+            return None
+        return Claim(op, column, topv / total * 100, group_by=group_by, group=top)
+    if op == "period_change_pct":
+        if not date_column or date_column not in df.columns:
+            return None
+        monthly = _monthly_sums(df, date_column, column)
+        if len(monthly) < 2 or monthly.iloc[-2] == 0:
+            return None
+        prev, last = float(monthly.iloc[-2]), float(monthly.iloc[-1])
+        return Claim(op, column, (last - prev) / abs(prev) * 100, date_column=date_column)
+    return None
+
+
 def generate_insights(df: pd.DataFrame, schema: SchemaIndex, max_numeric: int = 3) -> list[Insight]:
     insights: list[Insight] = []
     nums = [c.name for c in schema.of_kind("numeric")][:max_numeric]

@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from ain_dex import ain, dex, llm, report, security
+from ain_dex import ain, ask as ask_mod, dex, llm, report, security
 from ain_dex.models import Status
 
 load_dotenv()
@@ -26,7 +26,7 @@ def run_pipeline(filename: str, data: bytes):
     health = dex.health_check(raw, clean, schema)
     insights = ain.generate_insights(clean, schema)
     verdicts = dex.audit(clean, insights, schema, raw)
-    return {"clean": clean, "schema": schema, "health": health, "insights": insights, "verdicts": verdicts}
+    return {"raw": raw, "clean": clean, "schema": schema, "health": health, "insights": insights, "verdicts": verdicts}
 
 
 # ----------------------------- sidebar ------------------------------------ #
@@ -54,7 +54,7 @@ except security.UploadRejected as exc:
     st.error(f"Upload rejected: {exc}")
     st.stop()
 
-clean, schema = result["clean"], result["schema"]
+raw, clean, schema = result["raw"], result["clean"], result["schema"]
 health, insights, verdicts = result["health"], result["insights"], result["verdicts"]
 statuses = [dex.insight_status(v) for v in verdicts]
 verified_pct = (sum(s is Status.VERIFIED for s in statuses) / len(statuses) * 100) if statuses else 0
@@ -66,7 +66,7 @@ k2.metric("Columns", len(schema.columns))
 k3.metric("Dex health flags", len(health))
 k4.metric("Fully verified insights", f"{verified_pct:.0f}%")
 
-tab_ain, tab_dex, tab_scope, tab_export = st.tabs(["Ain Workspace", "Dex Audit", "Scope Check", "Export"])
+tab_ain, tab_dex, tab_ask, tab_export = st.tabs(["Ain Workspace", "Dex Audit", "Ask", "Export"])
 
 with tab_ain:
     st.subheader("Schema index")
@@ -108,12 +108,28 @@ with tab_dex:
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-with tab_scope:
-    st.subheader("Can this data answer my question?")
-    q = st.text_input("Ask a business question", placeholder="e.g. What is our customer acquisition cost?")
+with tab_ask:
+    st.subheader("Ask a question about this data")
+    st.caption("Ain calculates the answer and Dex verifies it against the raw cells. Nothing is estimated.")
+    use_claude = False
+    if llm.available():
+        use_claude = st.toggle("Let Claude interpret my question (sends column names and types only, never row values)")
+    examples = ask_mod.suggestions(schema)
+    if examples:
+        st.caption("Examples: " + "  |  ".join(examples))
+    q = st.text_input("Your question", placeholder="e.g. Which region has the highest revenue?")
     if q:
-        g = dex.check_scope(q, schema)
-        (st.success if g.supported else st.error)(g.message)
+        planner = (lambda text, sc: llm.plan_query(text, [(c.name, c.kind) for c in sc.columns])) if use_claude else None
+        a = ask_mod.ask(q, clean, raw, schema, planner)
+        if not a.supported:
+            st.error(a.text)
+        else:
+            st.success(f"{ICON[a.verdict.status]} {a.text}  `{a.verdict.status.value}`")
+            st.caption(a.verdict.lineage)
+            if a.verdict.status is not Status.VERIFIED:
+                st.warning(a.verdict.message)
+            with st.expander("How Ain interpreted this question"):
+                st.json({"interpreted_by": a.source, "plan": vars(a.plan)})
 
 with tab_export:
     st.subheader("Executive summary")

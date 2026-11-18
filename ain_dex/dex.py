@@ -48,11 +48,13 @@ def _recompute(df: pd.DataFrame, claim: Claim):
         return None
     op = claim.op
 
-    if op in {"sum", "mean", "median", "outlier_count"}:
+    if op in {"count", "sum", "mean", "median", "outlier_count"}:
         vals = _num_values(df, claim.column)
         n = len(vals)
         if n == 0:
             return None
+        if op == "count":
+            return float(n), None, n
         if op == "sum":
             return math.fsum(vals), None, n
         if op == "mean":

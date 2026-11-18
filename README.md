@@ -2,7 +2,7 @@
 
 **Ain analyses. Dex audits.** A spreadsheet analysis tool where every number must survive an independent check before it is called verified.
 
-- **Ain** (junior analyst): ingests a CSV/XLSX, indexes the schema, cleans messy types (`$1,200.50`, `(300)`, mixed date formats), and drafts insights.
+- **Ain** (junior analyst): ingests a CSV/XLSX, indexes the schema, cleans messy types (`$1,200.50`, `(300)`, mixed date formats), drafts insights, and answers plain-English questions.
 - **Dex** (auditor): re-computes every claim with a *separate* pure-Python implementation and re-parses the raw cells itself (so a cleaning bug cannot hide), blocks mismatches, flags data-quality problems, refuses questions the data cannot answer, and stamps each result with lineage (`Col [revenue], n=291 rows, 12 null(s) excluded`).
 
 Status badges: ✅ Verified · 🟡 Assumed/Imputed · 🟠 Low Sample Size · ⛔ Blocked (mismatch)
@@ -15,7 +15,7 @@ cd ain-dex
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1      # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 pip install -r requirements-dev.txt
-pytest -q                          # 28 tests should pass
+pytest -q                          # 52 tests should pass
 streamlit run app.py
 ```
 
@@ -26,14 +26,15 @@ Optional AI summaries: copy `.env.example` to `.env` and add `ANTHROPIC_API_KEY`
 ## Architecture
 
 ```
-app.py                Streamlit UI (Ain Workspace | Dex Audit | Scope Check | Export)
+app.py                Streamlit UI (Ain Workspace | Dex Audit | Ask | Export)
 ain_dex/
   security.py         upload validation, zip-bomb guard, CSV/Excel formula-injection sanitising
   ain.py              cleaning, type inference, schema index, insight generation (pandas)
+  ask.py              plain-English Q&A: rule-based or Claude-planned, strictly validated query plans
   dex.py              independent recomputation, health check, scope guardrail, narrative audit
   llm.py              optional Claude-written summary (verified aggregates only)
   report.py           Markdown report with verification stamps
-tests/                28 tests: security, Ain, Dex, and a UI smoke test
+tests/                52 tests: security, Ain, Dex, Q&A, and a UI smoke test
 ```
 
 Flow: **upload → validate → clean → index → Ain drafts claims → Dex recomputes → badge or block → export.**
@@ -50,6 +51,8 @@ Flow: **upload → validate → clean → index → Ain drafts claims → Dex re
 | Data leakage to an LLM | Only Dex-verified aggregates are sent, never raw rows |
 | Secret exposure | API key from environment / `.env` (git-ignored), never logged or echoed |
 | Hallucinated numbers in AI text | Dex flags any number in a narrative that matches no verified value |
+| LLM tricked into running code or inventing columns | The model only proposes a JSON plan. Ain validates it against an operation allowlist and the real schema, rejects unknown keys, and never executes model output |
+| Prompt injection via column names | Names are sanitised and length-capped before reaching the prompt, and the returned plan is validated regardless |
 | Supply chain / code issues | CI runs Bandit and pip-audit |
 
 ## Known limitations (good first issues)
@@ -57,11 +60,11 @@ Flow: **upload → validate → clean → index → Ain drafts claims → Dex re
 1. Ambiguous dates such as `03/04/2025` are read month-first by both Ain and Dex, so a day-first dataset would be misread by both. Add a per-file date-format setting.
 2. The "price or rate" column rule and the "incomplete month" rule are name- and threshold-based heuristics. Make them configurable.
 3. Scope guardrail uses keyword rules, not semantic matching.
-4. No natural-language Q&A yet. Next step: let Claude translate questions into a restricted set of Claim operations that Dex verifies.
+4. Q&A supports one calculation per question. Per-group tables ("total revenue by region"), filters ("in Q3") and multi-step questions are not supported yet.
 
 ## Roadmap ideas
 
-Chat Q&A over the data · SQL/DB connectors · Dex confidence scores using statistical tests · audit log export · Docker image · deployment on Streamlit Community Cloud.
+Group-by and filter questions · Chat history · SQL/DB connectors · Dex confidence scores using statistical tests · audit log export · Docker image · deployment on Streamlit Community Cloud.
 
 ## Add to your portfolio
 

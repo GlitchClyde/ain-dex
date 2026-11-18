@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import zipfile
 
 import pandas as pd
@@ -87,6 +88,16 @@ def load_dataframe(filename: str, data: bytes) -> pd.DataFrame:
         raise UploadRejected("The file has no data rows.")
     df.columns = [str(c).strip() for c in df.columns]
     return df
+
+
+def safe_name(name: str, limit: int = 60) -> str:
+    """Make an untrusted column name safe to place in an LLM prompt.
+
+    Column names come from the uploaded file, so they could carry injected instructions.
+    Strip anything that is not a plain name character and cap the length.
+    """
+    cleaned = re.sub(r"[^\w .\-/%()$#]", "", str(name))
+    return re.sub(r"\s+", " ", cleaned).strip()[:limit]
 
 
 def sanitize_cell(value):
