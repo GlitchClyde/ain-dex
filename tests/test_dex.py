@@ -24,6 +24,51 @@ def test_raw_reparse_catches_a_cleaning_bug(pipeline):
     assert any(v.status is Status.MISMATCH and "Cleaning disagreement" in v.message for vs in with_raw for v in vs)
 
 
+def _dates_frame():
+    import pandas as pd
+
+    rows = []
+    for i in range(30):
+        day = i % 20 + 1
+        rows.append({"d": f"2025-01-{day:02d}" if i % 2 else f"01/{day:02d}/2025", "v": "100"})
+        rows.append({"d": f"2025-02-{day:02d}" if i % 2 else f"02/{day:02d}/2025", "v": "150"})
+    return pd.DataFrame(rows)
+
+
+def test_date_claims_are_reparsed_from_raw():
+    raw = _dates_frame()
+    clean = ain.prepare(raw)
+    schema = ain.index_schema(clean)
+    insights = ain.generate_insights(clean, schema)
+    verdicts = [v for vs in dex.audit(clean, insights, schema, raw) for v in vs]
+    period = [v for v in verdicts if v.claim.op == "period_change_pct"]
+    assert period and all(v.status is not Status.MISMATCH for v in period)
+    assert any("re-parsed from raw" in v.lineage for v in period)
+
+
+def test_date_cleaning_bug_is_caught():
+    import pandas as pd
+
+    raw = _dates_frame()
+    clean = ain.prepare(raw)
+    schema = ain.index_schema(clean)
+    corrupted = clean.copy()
+    corrupted.loc[0, "d"] = pd.Timestamp("2025-02-05")  # a January row silently moved to February
+    insights = ain.generate_insights(corrupted, schema)
+    verdicts = [v for vs in dex.audit(corrupted, insights, schema, raw) for v in vs]
+    assert any(v.claim.op == "period_change_pct" and v.status is Status.MISMATCH for v in verdicts)
+
+
+def test_raw_date_parser_handles_mixed_formats():
+    from ain_dex.dex import _parse_raw_date
+
+    assert _parse_raw_date("2025-03-04").month == 3
+    assert _parse_raw_date("03/04/2025").month == 3   # ambiguous: month-first
+    assert _parse_raw_date("25/03/2025").month == 3   # day > 12 forces day-first
+    assert _parse_raw_date("not a date") is None
+    assert _parse_raw_date("2025-13-45") is None
+
+
 def test_partial_latest_month_is_downgraded():
     import pandas as pd
 

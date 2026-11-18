@@ -10,6 +10,7 @@ Rules Dex enforces:
 from __future__ import annotations
 
 import calendar
+import datetime as dt
 import math
 import numbers
 import re
@@ -132,6 +133,34 @@ def _parse_raw_number(v):
     return -f if neg else f
 
 
+_ISO_DATE = re.compile(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T].*)?$")
+_SLASH_DATE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T].*)?$")
+
+
+def _parse_raw_date(v):
+    """Dex's own date parser (pure Python). Ambiguous dd/mm vs mm/dd is read month-first
+    unless one part is >12. Returns a date, or None when unreadable."""
+    if v is None or v != v:
+        return None
+    if hasattr(v, "year") and hasattr(v, "month"):
+        return v
+    s = str(v).strip()
+    if s.lower() in _NULL_TOKENS:
+        return None
+    try:
+        m = _ISO_DATE.match(s)
+        if m:
+            return dt.date(int(m[1]), int(m[2]), int(m[3]))
+        m = _SLASH_DATE.match(s)
+        if m:
+            a, b, y = int(m[1]), int(m[2]), int(m[3])
+            month, day = (b, a) if a > 12 else (a, b)
+            return dt.date(y, month, day)
+    except ValueError:
+        return None
+    return None
+
+
 def _clean_label(v):
     if v is None or v != v:
         return None
@@ -144,6 +173,10 @@ def _shadow_frame(raw: pd.DataFrame, claim: Claim) -> pd.DataFrame | None:
     if claim.column not in raw.columns:
         return None
     data = {claim.column: [_parse_raw_number(v) for v in raw[claim.column].tolist()]}
+    if claim.date_column:
+        if claim.date_column not in raw.columns:
+            return None
+        data[claim.date_column] = [_parse_raw_date(v) for v in raw[claim.date_column].tolist()]
     if claim.group_by:
         if claim.group_by not in raw.columns:
             return None
@@ -193,7 +226,7 @@ def verify_claim(
         return Verdict(claim, Status.MISMATCH, f"Ain named '{claim.group}' but Dex found {sorted(winners)}.", lineage, value)
 
     # Second, independent check: re-parse the raw cells so a bug in Ain's cleaning cannot hide.
-    if raw is not None and claim.op != "period_change_pct":
+    if raw is not None:
         shadow = _shadow_frame(raw, claim)
         if shadow is not None:
             again = _recompute(shadow, claim)
