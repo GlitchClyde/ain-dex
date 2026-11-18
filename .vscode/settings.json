@@ -5,6 +5,5 @@
   "python.testing.pytestArgs": ["tests"],
   "python.terminal.activateEnvironment": true,
   "editor.formatOnSave": true,
-  "files.eol": "\n",
-  "python-envs.defaultEnvManager": "ms-python.python:system"
+  "files.eol": "\n"
 }

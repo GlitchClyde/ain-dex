@@ -5,6 +5,7 @@ every claim independently before anything is shown as verified.
 """
 from __future__ import annotations
 
+import calendar
 import re
 import warnings
 
@@ -16,6 +17,14 @@ from .models import Claim, ColumnInfo, Insight, SchemaIndex
 NULL_TOKENS = {"", "nan", "none", "null", "n/a", "na", "#n/a", "-"}
 MAX_GROUPS = 20
 _ID_NAME = re.compile(r"(^|[_\s])id$|^id([_\s]|$)|^index$", re.I)
+# Columns where a grand total is meaningless (prices, rates, scores...)
+_RATE_NAME = re.compile(r"price|(^|[^a-z])(rate|pct|percent|ratio|score|avg|average|margin)([^a-z]|$)", re.I)
+PARTIAL_MONTH_FRACTION = 0.9
+
+
+def is_additive(name: str) -> bool:
+    """True if summing this column makes business sense."""
+    return not _RATE_NAME.search(name)
 
 
 def fmt(x: float) -> str:
@@ -138,13 +147,16 @@ def generate_insights(df: pd.DataFrame, schema: SchemaIndex, max_numeric: int = 
         if s.empty:
             continue
         total, mean, med = float(s.sum()), float(s.mean()), float(s.median())
-        insights.append(
-            Insight(
-                title=f"{col}: overall profile",
-                text=f"Total {fmt(total)}; mean {fmt(mean)}; median {fmt(med)} across {len(s):,} records.",
-                claims=[Claim("sum", col, total), Claim("mean", col, mean), Claim("median", col, med)],
+        if is_additive(col):
+            text = f"Total {fmt(total)}; mean {fmt(mean)}; median {fmt(med)} across {len(s):,} records."
+            claims = [Claim("sum", col, total), Claim("mean", col, mean), Claim("median", col, med)]
+        else:
+            text = (
+                f"Mean {fmt(mean)}; median {fmt(med)} across {len(s):,} records. "
+                f"(No total: [{col}] looks like a price or rate, so summing it would be misleading.)"
             )
-        )
+            claims = [Claim("mean", col, mean), Claim("median", col, med)]
+        insights.append(Insight(title=f"{col}: overall profile", text=text, claims=claims))
         if len(s) >= 4:
             q1, q3 = s.quantile(0.25), s.quantile(0.75)
             iqr = q3 - q1
@@ -159,8 +171,9 @@ def generate_insights(df: pd.DataFrame, schema: SchemaIndex, max_numeric: int = 
                         )
                     )
 
-    if group and nums:
-        col = nums[0]
+    additive = [c for c in nums if is_additive(c)]
+    if group and additive:
+        col = additive[0]
         g = df.dropna(subset=[group, col]).groupby(group)[col].sum()
         if len(g) >= 2:
             top, topv, total = str(g.idxmax()), float(g.max()), float(g.sum())
@@ -179,18 +192,22 @@ def generate_insights(df: pd.DataFrame, schema: SchemaIndex, max_numeric: int = 
                 )
             )
 
-    if date and nums:
-        col = nums[0]
+    if date and additive:
+        col = additive[0]
         monthly = _monthly_sums(df, date, col)
         if len(monthly) >= 2 and monthly.iloc[-2] != 0:
             prev, last = float(monthly.iloc[-2]), float(monthly.iloc[-1])
             change = (last - prev) / abs(prev) * 100
+            last_date = df[date].dropna().max()
+            days = calendar.monthrange(last_date.year, last_date.month)[1]
+            note = ""
+            if last_date.day < PARTIAL_MONTH_FRACTION * days:
+                note = f" Data ends {last_date:%Y-%m-%d}, so the latest month is incomplete and not like-for-like."
             insights.append(
                 Insight(
                     title=f"{col}: latest month vs previous",
                     text=(
-                        f"{col} moved {change:+.1f}% from {monthly.index[-2]} to {monthly.index[-1]}. "
-                        "Check whether the latest month is complete before acting on this."
+                        f"{col} moved {change:+.1f}% from {monthly.index[-2]} to {monthly.index[-1]}.{note}"
                     ),
                     claims=[Claim("period_change_pct", col, change, date_column=date)],
                     chart=("line", pd.Series(monthly.values, index=monthly.index.astype(str))),

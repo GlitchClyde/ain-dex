@@ -28,6 +28,16 @@ def test_words_like_may_are_not_dates():
     assert ain.coerce_datetime(pd.Series(["May", "June", "July"])) is None
 
 
+def test_price_and_rate_columns_get_no_total():
+    import pandas as pd
+
+    df = pd.DataFrame({"unit_price": [10.0, 20.0, 30.0, 40.0], "revenue": [100.0, 200.0, 300.0, 400.0]})
+    schema = ain.index_schema(df)
+    by_title = {i.title: i for i in ain.generate_insights(df, schema)}
+    assert [c.op for c in by_title["unit_price: overall profile"].claims] == ["mean", "median"]
+    assert "sum" in [c.op for c in by_title["revenue: overall profile"].claims]
+
+
 def test_insights_generated(pipeline):
     _, clean, schema = pipeline
     titles = [i.title for i in ain.generate_insights(clean, schema)]

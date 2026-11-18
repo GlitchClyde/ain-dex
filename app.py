@@ -25,7 +25,7 @@ def run_pipeline(filename: str, data: bytes):
     schema = ain.index_schema(clean)
     health = dex.health_check(raw, clean, schema)
     insights = ain.generate_insights(clean, schema)
-    verdicts = dex.audit(clean, insights, schema)
+    verdicts = dex.audit(clean, insights, schema, raw)
     return {"clean": clean, "schema": schema, "health": health, "insights": insights, "verdicts": verdicts}
 
 

@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 .DS_Store
 Thumbs.db
+
+package-lock.json
+node_modules/

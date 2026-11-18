@@ -9,7 +9,9 @@ Rules Dex enforces:
 """
 from __future__ import annotations
 
+import calendar
 import math
+import numbers
 import re
 import statistics
 
@@ -106,7 +108,65 @@ def _recompute(df: pd.DataFrame, claim: Claim):
     return None
 
 
-def verify_claim(df: pd.DataFrame, claim: Claim, schema: SchemaIndex | None = None) -> Verdict:
+def _parse_raw_number(v):
+    """Dex's own number parser. Deliberately separate from Ain's pandas-based cleaning."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, numbers.Real):
+        f = float(v)
+        return f if math.isfinite(f) else None
+    s = str(v).strip()
+    if s.lower() in _NULL_TOKENS:
+        return None
+    neg = s.startswith("(") and s.endswith(")")
+    if neg:
+        s = s[1:-1]
+    for ch in "$€£₱,% \u00a0":
+        s = s.replace(ch, "")
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    if not math.isfinite(f):
+        return None
+    return -f if neg else f
+
+
+def _clean_label(v):
+    if v is None or v != v:
+        return None
+    s = str(v).strip()
+    return None if s.lower() in _NULL_TOKENS else s
+
+
+def _shadow_frame(raw: pd.DataFrame, claim: Claim) -> pd.DataFrame | None:
+    """Rebuild only the columns a claim needs, straight from the raw values."""
+    if claim.column not in raw.columns:
+        return None
+    data = {claim.column: [_parse_raw_number(v) for v in raw[claim.column].tolist()]}
+    if claim.group_by:
+        if claim.group_by not in raw.columns:
+            return None
+        data[claim.group_by] = [_clean_label(v) for v in raw[claim.group_by].tolist()]
+    return pd.DataFrame(data)
+
+
+def _latest_month_partial(df: pd.DataFrame, date_col: str | None):
+    """Return the last date if the latest month looks incomplete (heuristic), else None."""
+    if not date_col or date_col not in df.columns:
+        return None
+    dates = [t for t in df[date_col].tolist() if t is not None and t == t]
+    if not dates:
+        return None
+    last = max(dates)
+    if last.day < 0.9 * calendar.monthrange(last.year, last.month)[1]:
+        return last
+    return None
+
+
+def verify_claim(
+    df: pd.DataFrame, claim: Claim, schema: SchemaIndex | None = None, raw: pd.DataFrame | None = None
+) -> Verdict:
     result = _recompute(df, claim)
     lineage_cols = f"Col [{claim.column}]"
     if claim.group_by:
@@ -132,9 +192,39 @@ def verify_claim(df: pd.DataFrame, claim: Claim, schema: SchemaIndex | None = No
     if winners is not None and claim.group not in winners:
         return Verdict(claim, Status.MISMATCH, f"Ain named '{claim.group}' but Dex found {sorted(winners)}.", lineage, value)
 
+    # Second, independent check: re-parse the raw cells so a bug in Ain's cleaning cannot hide.
+    if raw is not None and claim.op != "period_change_pct":
+        shadow = _shadow_frame(raw, claim)
+        if shadow is not None:
+            again = _recompute(shadow, claim)
+            ok = (
+                again is not None
+                and math.isclose(claim.value, again[0], rel_tol=REL_TOL, abs_tol=1e-9)
+                and (again[1] is None or claim.group in again[1])
+            )
+            if not ok:
+                got = "nothing" if again is None else f"{again[0]:,.4f}"
+                return Verdict(
+                    claim,
+                    Status.MISMATCH,
+                    f"Cleaning disagreement: re-parsing the raw cells gives {got}, Ain used {claim.value:,.4f}.",
+                    lineage,
+                    value,
+                )
+            lineage += "; re-parsed from raw cells: matched"
+
     null_pct = nulls / len(df) if len(df) else 0.0
     if n < MIN_SAMPLE:
         return Verdict(claim, Status.LOW_SAMPLE, f"Only {n} rows support this claim (<{MIN_SAMPLE}).", lineage, value)
+    partial = _latest_month_partial(df, claim.date_column) if claim.op == "period_change_pct" else None
+    if partial is not None:
+        return Verdict(
+            claim,
+            Status.ASSUMED,
+            f"Matches, but data ends {partial:%Y-%m-%d}, so the latest month is incomplete and the change is not like-for-like.",
+            lineage,
+            value,
+        )
     if null_pct > ASSUMED_NULL_PCT:
         return Verdict(
             claim,
@@ -146,8 +236,10 @@ def verify_claim(df: pd.DataFrame, claim: Claim, schema: SchemaIndex | None = No
     return Verdict(claim, Status.VERIFIED, "Independently recomputed and matched.", lineage, value)
 
 
-def audit(df: pd.DataFrame, insights: list[Insight], schema: SchemaIndex | None = None) -> list[list[Verdict]]:
-    return [[verify_claim(df, c, schema) for c in i.claims] for i in insights]
+def audit(
+    df: pd.DataFrame, insights: list[Insight], schema: SchemaIndex | None = None, raw: pd.DataFrame | None = None
+) -> list[list[Verdict]]:
+    return [[verify_claim(df, c, schema, raw) for c in i.claims] for i in insights]
 
 
 def insight_status(verdicts: list[Verdict]) -> Status:

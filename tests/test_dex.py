@@ -5,11 +5,35 @@ from ain_dex.models import Claim, Status
 
 
 def test_all_ain_claims_verify(pipeline):
-    _, clean, schema = pipeline
+    raw, clean, schema = pipeline
     insights = ain.generate_insights(clean, schema)
-    for vs in dex.audit(clean, insights, schema):
+    for vs in dex.audit(clean, insights, schema, raw):
         for v in vs:
             assert v.status is not Status.MISMATCH, v.message
+
+
+def test_raw_reparse_catches_a_cleaning_bug(pipeline):
+    """If cleaning corrupts a value, Ain's numbers are self-consistent but wrong. Only the raw re-parse sees it."""
+    raw, clean, schema = pipeline
+    corrupted = clean.copy()
+    corrupted.loc[0, "revenue"] = 1_000_000.0  # simulated cleaning bug
+    insights = ain.generate_insights(corrupted, schema)
+    without_raw = dex.audit(corrupted, insights, schema)
+    assert all(v.status is not Status.MISMATCH for vs in without_raw for v in vs)
+    with_raw = dex.audit(corrupted, insights, schema, raw)
+    assert any(v.status is Status.MISMATCH and "Cleaning disagreement" in v.message for vs in with_raw for v in vs)
+
+
+def test_partial_latest_month_is_downgraded():
+    import pandas as pd
+
+    from ain_dex.models import Claim
+
+    dates = pd.to_datetime(["2025-01-10", "2025-01-20", "2025-02-02", "2025-02-03"] * 10)
+    df = pd.DataFrame({"d": dates, "v": [100.0, 100.0, 50.0, 50.0] * 10})
+    # Jan = 2000, Feb = 1000 -> -50%
+    v = dex.verify_claim(df, Claim("period_change_pct", "v", -50.0, date_column="d"))
+    assert v.status is Status.ASSUMED and "incomplete" in v.message
 
 
 def test_dex_blocks_a_tampered_claim(pipeline):
